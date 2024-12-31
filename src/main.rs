@@ -9,14 +9,17 @@ const REGISTER_NAMES: [[&str; 8]; 2] = [
     ["ax", "cx", "dx", "bx", "sp", "bp", "si", "di"],
 ];
 
-const MEMORY_ADDRESS: [&str; 8] = [
+const EFFECTIVE_MEMOERY_ADDRESS: [&str; 8] = [
     "bx + si", "bx + di", "bp + si", "bp + di", "si", "di", "bp", "bx",
 ];
 
 const ACCUMULATOR_NAMES: [&str; 2] = ["al", "ax"];
 
 const MOVE_IMMEDIATE_TO_REGISTER_INSTRUCTION: u8 = 0b10110000;
+
 const IMMEDIATE_TO_REGISTER_MEMORY_INSTRUCTION: u8 = 0b10000000;
+const IMMEDIATE_TO_REGISTER_INSTRUCTIONS: [&str; 8] =
+    ["add", "1", "2", "3", "4", "sub", "6", "cmp"];
 
 const RM_TO_RM_INSTRUCTIONS: [(u8, &str); 4] = [
     (0b10001000, "mov"),
@@ -54,8 +57,6 @@ const RETURN_INSTRUCTIONS: [(u8, &str); 20] = [
     (0b11100011, "jcxz"),
 ];
 
-const IMMEDIATE_TO_REGISTER_OPERATIONS: [&str; 8] = ["add", "1", "2", "3", "4", "sub", "6", "cmp"];
-
 fn main() -> std::io::Result<()> {
     let args: Vec<String> = env::args().collect();
     assert_eq!(args.len(), 2);
@@ -76,31 +77,64 @@ fn main() -> std::io::Result<()> {
         if MOVE_IMMEDIATE_TO_REGISTER_INSTRUCTION == current_byte & 0b11110000 {
             let w = ((0b1000 & current_byte) >> 3) as usize;
             let reg = 0b111 & current_byte as usize;
-            let data = read_date_based_on_w(&mut file, w == 0);
+            let data = read_date(&mut file, w == 0);
             println!("mov {}, {}", REGISTER_NAMES[w][reg], data);
         } else if IMMEDIATE_TO_REGISTER_MEMORY_INSTRUCTION == current_byte & 0b11111100 {
-            let (rm_name, prefix, next_byte, data) = decode_immediate_to_register(
-                &mut file,
-                current_byte,
-                (current_byte & 0b11) != 0b01,
-            );
+            let mut next_byte = [0u8];
+            file.read_exact(&mut next_byte).unwrap();
+            let next_byte = next_byte[0];
+
+            let mod_value = (0b11000000 & next_byte) >> 6;
+            let rm = (0b111 & next_byte) as usize;
+            let one_byte = (current_byte & 0b11) != 0b01;
+            let rm_name = read_rm(&mut file, mod_value, (0b1 & current_byte) as usize, rm);
+            let data = read_date(&mut file, one_byte);
+            let prefix = if mod_value == 0b11 {
+                ""
+            } else {
+                if one_byte { "byte " } else { "word " }
+            };
+
             let operation_index = ((next_byte & 0b111000) >> 3) as usize;
             println!(
                 "{} {}{}, {}",
-                IMMEDIATE_TO_REGISTER_OPERATIONS[operation_index], prefix, rm_name, data
+                IMMEDIATE_TO_REGISTER_INSTRUCTIONS[operation_index], prefix, rm_name, data
             );
         } else if let Some(instruction) = RM_TO_RM_INSTRUCTIONS
             .iter()
             .find(|i| i.0 == current_byte & 0b11111100)
         {
-            let (source, destination) = decode_rm_to_rm(&mut file, current_byte);
+            let mut next_byte = [0u8];
+            file.read_exact(&mut next_byte).unwrap();
+            let next_byte = next_byte[0];
+
+            let mod_value = (0b11000000 & next_byte) >> 6;
+            let reg = ((0b111000 & next_byte) >> 3) as usize;
+            let rm = 0b111 & next_byte as usize;
+
+            let w = 0b00000001 & current_byte as usize;
+            let d = (0b00000010 & current_byte) >> 1;
+
+            let reg_name = String::from(REGISTER_NAMES[w][reg]);
+            let rm_name = read_rm(&mut file, mod_value, w, rm);
+
+            let source;
+            let destination;
+            if d == 0 {
+                source = reg_name;
+                destination = rm_name;
+            } else {
+                source = rm_name;
+                destination = reg_name;
+            }
+
             println!("{} {}, {}", instruction.1, destination, source);
         } else if let Some(instruction) = IMMEDIATE_TO_ACCUMULATOR_INSTRUCTIONS
             .iter()
             .find(|i| i.0 == current_byte & 0b11111110)
         {
             let w = 0b1 & current_byte;
-            let data = read_date_based_on_w(&mut file, w == 0);
+            let data = read_date(&mut file, w == 0);
             println!(
                 "{} {}, {}",
                 instruction.1, ACCUMULATOR_NAMES[w as usize], data
@@ -109,61 +143,12 @@ fn main() -> std::io::Result<()> {
             .iter()
             .find(|i| i.0 == current_byte & 0b11111111)
         {
-            let data = read_date_based_on_w(&mut file, true);
+            let data = read_date(&mut file, true);
             println!("{} ; {}", instruction.1, data);
         }
     }
 
     Ok(())
-}
-
-/// Works on data where the next byte is of format **mod reg r/m**
-fn decode_rm_to_rm(file: &mut File, current_byte: u8) -> (String, String) {
-    let mut next_byte = [0u8];
-    file.read_exact(&mut next_byte).unwrap();
-    let next_byte = next_byte[0];
-
-    let mod_value = (0b11000000 & next_byte) >> 6;
-    let reg = ((0b111000 & next_byte) >> 3) as usize;
-    let rm = 0b111 & next_byte as usize;
-
-    let w = 0b00000001 & current_byte as usize;
-    let d = (0b00000010 & current_byte) >> 1;
-
-    let reg_name = String::from(REGISTER_NAMES[w][reg]);
-    let rm_name = read_rm(file, mod_value, w, rm);
-
-    if d == 0 {
-        return (reg_name, rm_name);
-    } else {
-        return (rm_name, reg_name);
-    }
-}
-
-/// Decode instruction for the type of immediate to register/memory, and it
-/// returns the rm_name, the prefix (empty string, byte or word), the next byte and the data.
-fn decode_immediate_to_register(
-    file: &mut File,
-    current_byte: u8,
-    one_byte: bool,
-) -> (String, &str, u8, i16) {
-    let mut next_byte = [0u8];
-    file.read_exact(&mut next_byte).unwrap();
-    let next_byte = next_byte[0];
-    let mod_value = (0b11000000 & next_byte) >> 6;
-    let rm = (0b111 & next_byte) as usize;
-    let rm_name = read_rm(file, mod_value, (0b1 & current_byte) as usize, rm);
-    let data = read_date_based_on_w(file, one_byte);
-    return (
-        rm_name,
-        if mod_value == 0b11 {
-            ""
-        } else {
-            if one_byte { "byte " } else { "word " }
-        },
-        next_byte,
-        data,
-    );
 }
 
 fn read_rm(file: &mut File, mod_value: u8, w: usize, rm: usize) -> String {
@@ -177,20 +162,20 @@ fn read_rm(file: &mut File, mod_value: u8, w: usize, rm: usize) -> String {
                 ((displacment[1] as u16) << 8) | displacment[0] as u16
             );
         } else {
-            return format!("[{}]", MEMORY_ADDRESS[rm]);
+            return format!("[{}]", EFFECTIVE_MEMOERY_ADDRESS[rm]);
         }
     } else if mod_value == 0b01 {
         // Memory mode, 8-bit displacment
         let mut displacment = [0u8];
         file.read_exact(&mut displacment).unwrap();
-        return format!("[{} + {}]", MEMORY_ADDRESS[rm], displacment[0]);
+        return format!("[{} + {}]", EFFECTIVE_MEMOERY_ADDRESS[rm], displacment[0]);
     } else if mod_value == 0b10 {
         // Memory mode, 16-bit displacment
         let mut displacment = [0u8, 0u8];
         file.read_exact(&mut displacment).unwrap();
         return format!(
             "[{} + {}]",
-            MEMORY_ADDRESS[rm],
+            EFFECTIVE_MEMOERY_ADDRESS[rm],
             ((displacment[1] as u16) << 8) | displacment[0] as u16
         );
     } else {
@@ -198,7 +183,7 @@ fn read_rm(file: &mut File, mod_value: u8, w: usize, rm: usize) -> String {
     }
 }
 
-fn read_date_based_on_w(file: &mut File, one_byte: bool) -> i16 {
+fn read_date(file: &mut File, one_byte: bool) -> i16 {
     if one_byte {
         let mut data = [0u8];
         file.read_exact(&mut data).unwrap();
