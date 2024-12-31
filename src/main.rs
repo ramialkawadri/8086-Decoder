@@ -17,17 +17,42 @@ const ACCUMULATOR_NAMES: [&str; 2] = ["al", "ax"];
 
 const MOVE_INSTRUCTION: u8 = 0b10001000;
 const MOVE_IMMEDIATE_TO_REGISTER_INSTRUCTION: u8 = 0b10110000;
-
-const ADD_INSTRUCTION: u8 = 0b00000000;
-const SUB_INSTRUCTION: u8 = 0b00101000;
-const CMP_INSTRUCTION: u8 = 0b00111000;
-
 const IMMEDIATE_TO_REGISTER_MEMORY_INSTRUCTION: u8 = 0b10000000;
 
-const IMMEDIATE_TO_ACCUMULATOR_OPERATIONS: [(u8, &str); 3] =
-    [(0b00000100, "add"), (0b00101100, "sub"), (0b00111100, "cmp")];
+const RM_TO_RM_INSTRUCTIONS: [(u8, &str); 3] = [
+    (0b00000000, "add"),
+    (0b00101000, "sub"),
+    (0b00111000, "cmp"),
+];
 
-// TODO: JNZ: jump if not zero [01110101][displacment] (page 168)
+const IMMEDIATE_TO_ACCUMULATOR_INSTRUCTIONS: [(u8, &str); 3] = [
+    (0b00000100, "add"),
+    (0b00101100, "sub"),
+    (0b00111100, "cmp"),
+];
+
+const RETURN_INSTRUCTIONS: [(u8, &str); 20] = [
+    (0b01110100, "je"),
+    (0b01111100, "jl"),
+    (0b01111110, "jle"),
+    (0b01110010, "jb"),
+    (0b01110110, "jbe"),
+    (0b01111010, "jp"),
+    (0b01110000, "jo"),
+    (0b01111000, "js"),
+    (0b01110101, "jne"),
+    (0b01111101, "jnl"),
+    (0b01111111, "jg"),
+    (0b01110011, "jnb"),
+    (0b01110111, "ja"),
+    (0b01111011, "jnp"),
+    (0b01110001, "jno"),
+    (0b01111001, "jns"),
+    (0b11100010, "loop"),
+    (0b11100001, "loopz"),
+    (0b11100000, "loopnz"),
+    (0b11100011, "jcxz"),
+];
 
 const IMMEDIATE_TO_REGISTER_OPERATIONS: [&str; 8] = ["add", "1", "2", "3", "4", "sub", "6", "cmp"];
 
@@ -56,15 +81,6 @@ fn main() -> std::io::Result<()> {
         } else if MOVE_INSTRUCTION == current_byte & 0b11111100 {
             let (source, destination) = decode_rm_to_rm(&mut file, current_byte);
             println!("mov {}, {}", destination, source);
-        } else if ADD_INSTRUCTION == current_byte & 0b11111100 {
-            let (source, destination) = decode_rm_to_rm(&mut file, current_byte);
-            println!("add {}, {}", destination, source);
-        } else if SUB_INSTRUCTION == current_byte & 0b11111100 {
-            let (source, destination) = decode_rm_to_rm(&mut file, current_byte);
-            println!("sub {}, {}", destination, source);
-        } else if CMP_INSTRUCTION == current_byte & 0b11111100 {
-            let (source, destination) = decode_rm_to_rm(&mut file, current_byte);
-            println!("cmp {}, {}", destination, source);
         } else if IMMEDIATE_TO_REGISTER_MEMORY_INSTRUCTION == current_byte & 0b11111100 {
             let (rm_name, prefix, next_byte, data) = decode_immediate_to_register(
                 &mut file,
@@ -76,18 +92,28 @@ fn main() -> std::io::Result<()> {
                 "{} {}{}, {}",
                 IMMEDIATE_TO_REGISTER_OPERATIONS[operation_index], prefix, rm_name, data
             );
-        } else {
-            // Immediate to accumulator.
-            let operation = IMMEDIATE_TO_ACCUMULATOR_OPERATIONS
-                .iter()
-                .find(|i| i.0 == current_byte & 0b11111110);
-            let operation = match operation {
-                Some(operation) => operation,
-                None => continue,
-            };
+        } else if let Some(instruction) = RM_TO_RM_INSTRUCTIONS
+            .iter()
+            .find(|i| i.0 == current_byte & 0b11111100)
+        {
+            let (source, destination) = decode_rm_to_rm(&mut file, current_byte);
+            println!("{} {}, {}", instruction.1, destination, source);
+        } else if let Some(instruction) = IMMEDIATE_TO_ACCUMULATOR_INSTRUCTIONS
+            .iter()
+            .find(|i| i.0 == current_byte & 0b11111110)
+        {
             let w = 0b1 & current_byte;
             let data = read_date_based_on_w(&mut file, w == 0);
-            println!("{} {}, {}", operation.1, ACCUMULATOR_NAMES[w as usize], data);
+            println!(
+                "{} {}, {}",
+                instruction.1, ACCUMULATOR_NAMES[w as usize], data
+            );
+        } else if let Some(instruction) = RETURN_INSTRUCTIONS
+            .iter()
+            .find(|i| i.0 == current_byte & 0b11111111)
+        {
+            let data = read_date_based_on_w(&mut file, true);
+            println!("{} ; {}", instruction.1, data);
         }
     }
 
