@@ -15,11 +15,11 @@ const MEMORY_ADDRESS: [&str; 8] = [
 
 const ACCUMULATOR_NAMES: [&str; 2] = ["al", "ax"];
 
-const MOVE_INSTRUCTION: u8 = 0b10001000;
 const MOVE_IMMEDIATE_TO_REGISTER_INSTRUCTION: u8 = 0b10110000;
 const IMMEDIATE_TO_REGISTER_MEMORY_INSTRUCTION: u8 = 0b10000000;
 
-const RM_TO_RM_INSTRUCTIONS: [(u8, &str); 3] = [
+const RM_TO_RM_INSTRUCTIONS: [(u8, &str); 4] = [
+    (0b10001000, "mov"),
     (0b00000000, "add"),
     (0b00101000, "sub"),
     (0b00111000, "cmp"),
@@ -78,9 +78,6 @@ fn main() -> std::io::Result<()> {
             let reg = 0b111 & current_byte as usize;
             let data = read_date_based_on_w(&mut file, w == 0);
             println!("mov {}, {}", REGISTER_NAMES[w][reg], data);
-        } else if MOVE_INSTRUCTION == current_byte & 0b11111100 {
-            let (source, destination) = decode_rm_to_rm(&mut file, current_byte);
-            println!("mov {}, {}", destination, source);
         } else if IMMEDIATE_TO_REGISTER_MEMORY_INSTRUCTION == current_byte & 0b11111100 {
             let (rm_name, prefix, next_byte, data) = decode_immediate_to_register(
                 &mut file,
