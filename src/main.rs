@@ -1,6 +1,18 @@
+mod constants;
+mod rm;
+mod simulation;
+
 use std::env;
 use std::fs::File;
 use std::io::prelude::*;
+
+use constants::{
+    ACCUMULATOR_NAMES, IMMEDIATE_TO_ACCUMULATOR_INSTRUCTIONS, IMMEDIATE_TO_REGISTER_INSTRUCTIONS,
+    IMMEDIATE_TO_REGISTER_MEMORY_INSTRUCTION, MOVE_IMMEDIATE_TO_REGISTER_INSTRUCTION,
+    RETURN_INSTRUCTIONS,
+};
+use rm::Rm;
+use simulation::{AddRmToRmSimulator, MovRmToRmSimulator, RMToRmSimulator};
 
 const REGISTER_NAMES: [[&str; 8]; 2] = [
     // Used when W = 0.
@@ -9,67 +21,31 @@ const REGISTER_NAMES: [[&str; 8]; 2] = [
     ["ax", "cx", "dx", "bx", "sp", "bp", "si", "di"],
 ];
 
-const EFFECTIVE_MEMOERY_ADDRESS: [&str; 8] = [
-    "bx + si", "bx + di", "bp + si", "bp + di", "si", "di", "bp", "bx",
-];
-
-const ACCUMULATOR_NAMES: [&str; 2] = ["al", "ax"];
-
-const MOVE_IMMEDIATE_TO_REGISTER_INSTRUCTION: u8 = 0b10110000;
-
-const IMMEDIATE_TO_REGISTER_MEMORY_INSTRUCTION: u8 = 0b10000000;
-const IMMEDIATE_TO_REGISTER_INSTRUCTIONS: [&str; 8] =
-    ["add", "1", "2", "3", "4", "sub", "6", "cmp"];
-
-const RM_TO_RM_INSTRUCTIONS: [(u8, &str); 4] = [
-    (0b10001000, "mov"),
-    (0b00000000, "add"),
-    (0b00101000, "sub"),
-    (0b00111000, "cmp"),
-];
-
-const IMMEDIATE_TO_ACCUMULATOR_INSTRUCTIONS: [(u8, &str); 3] = [
-    (0b00000100, "add"),
-    (0b00101100, "sub"),
-    (0b00111100, "cmp"),
-];
-
-const RETURN_INSTRUCTIONS: [(u8, &str); 20] = [
-    (0b01110100, "je"),
-    (0b01111100, "jl"),
-    (0b01111110, "jle"),
-    (0b01110010, "jb"),
-    (0b01110110, "jbe"),
-    (0b01111010, "jp"),
-    (0b01110000, "jo"),
-    (0b01111000, "js"),
-    (0b01110101, "jne"),
-    (0b01111101, "jnl"),
-    (0b01111111, "jg"),
-    (0b01110011, "jnb"),
-    (0b01110111, "ja"),
-    (0b01111011, "jnp"),
-    (0b01110001, "jno"),
-    (0b01111001, "jns"),
-    (0b11100010, "loop"),
-    (0b11100001, "loopz"),
-    (0b11100000, "loopnz"),
-    (0b11100011, "jcxz"),
-];
-
 fn main() -> std::io::Result<()> {
     let args: Vec<String> = env::args().collect();
-    assert_eq!(args.len(), 2);
+    assert!(args.len() >= 2);
 
+    let simulation_mode = args[1] == "--exec";
     let mut file = File::open(args.last().unwrap())?;
     let mut current_byte = [0u8];
+
+    let rm_to_rm_instructions: [(u8, &str, Box<dyn RMToRmSimulator>); 4] = [
+        (0b10001000, "mov", Box::new(MovRmToRmSimulator)),
+        (0b00000000, "add", Box::new(AddRmToRmSimulator)),
+        (0b00101000, "sub", Box::new(MovRmToRmSimulator)),
+        (0b00111000, "cmp", Box::new(MovRmToRmSimulator)),
+    ];
 
     println!("; {}\n", args.last().unwrap());
     println!("bits 16\n");
 
-    // while let Ok(_) = file.read_exact(&mut current_byte) {
-    //     print!("{:#010b} ", current_byte[0]);
-    // }
+    if args[1] == "--print-binary" {
+        while let Ok(_) = file.read_exact(&mut current_byte) {
+            print!("{:#010b} ", current_byte[0]);
+        }
+    }
+
+    let mut simulation_registers = [0, 0, 0, 0, 0, 0, 0, 0];
 
     while let Ok(_) = file.read_exact(&mut current_byte) {
         let current_byte = current_byte[0];
@@ -78,7 +54,21 @@ fn main() -> std::io::Result<()> {
             let w = ((0b1000 & current_byte) >> 3) as usize;
             let reg = 0b111 & current_byte as usize;
             let data = read_date(&mut file, w == 0);
-            println!("mov {}, {}", REGISTER_NAMES[w][reg], data);
+
+            if w == 1 && simulation_mode {
+                let old_value = simulation_registers[reg];
+                simulation_registers[reg] = data;
+                println!(
+                    "mov {}, {} ; {}:{:#06x}->{:#06x}",
+                    REGISTER_NAMES[w][reg],
+                    data,
+                    REGISTER_NAMES[w][reg],
+                    old_value,
+                    simulation_registers[reg]
+                );
+            } else {
+                println!("mov {}, {}", REGISTER_NAMES[w][reg], data);
+            }
         } else if IMMEDIATE_TO_REGISTER_MEMORY_INSTRUCTION == current_byte & 0b11111100 {
             let mut next_byte = [0u8];
             file.read_exact(&mut next_byte).unwrap();
@@ -87,7 +77,8 @@ fn main() -> std::io::Result<()> {
             let mod_value = (0b11000000 & next_byte) >> 6;
             let rm = (0b111 & next_byte) as usize;
             let one_byte = (current_byte & 0b11) != 0b01;
-            let rm_name = read_rm(&mut file, mod_value, (0b1 & current_byte) as usize, rm);
+            let rm_name =
+                Rm::new(&mut file, mod_value, (0b1 & current_byte) as usize, rm);
             let data = read_date(&mut file, one_byte);
             let prefix = if mod_value == 0b11 {
                 ""
@@ -100,7 +91,7 @@ fn main() -> std::io::Result<()> {
                 "{} {}{}, {}",
                 IMMEDIATE_TO_REGISTER_INSTRUCTIONS[operation_index], prefix, rm_name, data
             );
-        } else if let Some(instruction) = RM_TO_RM_INSTRUCTIONS
+        } else if let Some(instruction) = rm_to_rm_instructions
             .iter()
             .find(|i| i.0 == current_byte & 0b11111100)
         {
@@ -108,27 +99,51 @@ fn main() -> std::io::Result<()> {
             file.read_exact(&mut next_byte).unwrap();
             let next_byte = next_byte[0];
 
-            let mod_value = (0b11000000 & next_byte) >> 6;
-            let reg = ((0b111000 & next_byte) >> 3) as usize;
-            let rm = 0b111 & next_byte as usize;
-
             let w = 0b00000001 & current_byte as usize;
             let d = (0b00000010 & current_byte) >> 1;
 
-            let reg_name = String::from(REGISTER_NAMES[w][reg]);
-            let rm_name = read_rm(&mut file, mod_value, w, rm);
+            let mod_value = (0b11000000 & next_byte) >> 6;
+            let reg = Rm::Reg {
+                w,
+                reg: ((0b111000 & next_byte) >> 3) as usize,
+            };
+            let rm = Rm::new(&mut file, mod_value, w, 0b111 & next_byte as usize);
+
+            let mut old_value = 0;
 
             let source;
             let destination;
             if d == 0 {
-                source = reg_name;
-                destination = rm_name;
+                source = reg;
+                destination = rm;
             } else {
-                source = rm_name;
-                destination = reg_name;
+                source = rm;
+                destination = reg;
             }
 
-            println!("{} {}, {}", instruction.1, destination, source);
+            if simulation_mode {
+                if let Rm::Reg { reg, .. } = destination {
+                    old_value = simulation_registers[reg];
+                }
+                instruction
+                    .2
+                    .simulate(&mut simulation_registers, &source, &destination);
+            }
+
+            if w == 1 && simulation_mode {
+                if let Rm::Reg { reg, w } = destination {
+                    println!(
+                        "mov {}, {} ; {}:{:#06x}->{:#06x}",
+                        destination,
+                        source,
+                        REGISTER_NAMES[w][reg],
+                        old_value,
+                        simulation_registers[reg]
+                    );
+                }
+            } else {
+                println!("{} {}, {}", instruction.1, destination, source);
+            }
         } else if let Some(instruction) = IMMEDIATE_TO_ACCUMULATOR_INSTRUCTIONS
             .iter()
             .find(|i| i.0 == current_byte & 0b11111110)
@@ -148,39 +163,19 @@ fn main() -> std::io::Result<()> {
         }
     }
 
-    Ok(())
-}
-
-fn read_rm(file: &mut File, mod_value: u8, w: usize, rm: usize) -> String {
-    if mod_value == 0b00 {
-        // Memory mode no displacment
-        if rm == 0b110 {
-            let mut displacment = [0u8, 0u8];
-            file.read_exact(&mut displacment).unwrap();
-            return format!(
-                "[{}]",
-                ((displacment[1] as u16) << 8) | displacment[0] as u16
+    if simulation_mode {
+        println!("\nFinal registers:");
+        for i in 0..(simulation_registers.len()) {
+            println!(
+                "\t{}: {:#06x} ({})",
+                REGISTER_NAMES[1][i],
+                simulation_registers[i],
+                simulation_registers[i],
             );
-        } else {
-            return format!("[{}]", EFFECTIVE_MEMOERY_ADDRESS[rm]);
         }
-    } else if mod_value == 0b01 {
-        // Memory mode, 8-bit displacment
-        let mut displacment = [0u8];
-        file.read_exact(&mut displacment).unwrap();
-        return format!("[{} + {}]", EFFECTIVE_MEMOERY_ADDRESS[rm], displacment[0]);
-    } else if mod_value == 0b10 {
-        // Memory mode, 16-bit displacment
-        let mut displacment = [0u8, 0u8];
-        file.read_exact(&mut displacment).unwrap();
-        return format!(
-            "[{} + {}]",
-            EFFECTIVE_MEMOERY_ADDRESS[rm],
-            ((displacment[1] as u16) << 8) | displacment[0] as u16
-        );
-    } else {
-        return String::from(REGISTER_NAMES[w][rm]);
     }
+
+    Ok(())
 }
 
 fn read_date(file: &mut File, one_byte: bool) -> i16 {
