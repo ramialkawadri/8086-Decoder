@@ -3,12 +3,14 @@ mod flag;
 mod rm;
 mod simulator;
 
-use std::env;
 use std::fs::File;
 use std::io::prelude::*;
+use std::{env, io::SeekFrom};
 
 use constants::{
-    ACCUMULATOR_NAMES, IMMEDIATE_TO_ACCUMULATOR_INSTRUCTIONS, IMMEDIATE_TO_REGISTER_MEMORY_INSTRUCTION, MOVE_IMMEDIATE_TO_REGISTER_INSTRUCTION, REGISTER_NAMES, RETURN_INSTRUCTIONS
+    ACCUMULATOR_NAMES, IMMEDIATE_TO_ACCUMULATOR_INSTRUCTIONS,
+    IMMEDIATE_TO_REGISTER_MEMORY_INSTRUCTION, MOVE_IMMEDIATE_TO_REGISTER_INSTRUCTION,
+    REGISTER_NAMES, RETURN_INSTRUCTIONS,
 };
 use flag::Flags;
 use rm::Rm;
@@ -64,6 +66,7 @@ fn main() -> std::io::Result<()> {
         sf: false,
     };
 
+    let mut old_ip = 0;
     while let Ok(_) = file.read_exact(&mut current_byte) {
         let current_byte = current_byte[0];
 
@@ -75,7 +78,7 @@ fn main() -> std::io::Result<()> {
             if w == 1 && simulation_mode {
                 let old_value = simulation_registers[reg];
                 simulation_registers[reg] = data;
-                println!(
+                print!(
                     "mov {}, {} ; {}:{:#06x}->{:#06x}",
                     REGISTER_NAMES[w][reg],
                     data,
@@ -84,7 +87,7 @@ fn main() -> std::io::Result<()> {
                     simulation_registers[reg]
                 );
             } else {
-                println!("mov {}, {}", REGISTER_NAMES[w][reg], data);
+                print!("mov {}, {}", REGISTER_NAMES[w][reg], data);
             }
         } else if IMMEDIATE_TO_REGISTER_MEMORY_INSTRUCTION == current_byte & 0b11111100 {
             let mut next_byte = [0u8];
@@ -115,7 +118,7 @@ fn main() -> std::io::Result<()> {
                     immediate_to_register_instructions[operation_index]
                         .1
                         .simulate(&mut simulation_registers, &mut flags, &rm, data);
-                    println!(
+                    print!(
                         "{} {}, {} ; {}:{:#06x}->{:#06x} ; flags:{}->{}",
                         immediate_to_register_instructions[operation_index].0,
                         rm,
@@ -128,7 +131,7 @@ fn main() -> std::io::Result<()> {
                     );
                 }
             } else {
-                println!(
+                print!(
                     "{} {}{}, {}",
                     immediate_to_register_instructions[operation_index].0, prefix, rm, data
                 );
@@ -178,7 +181,7 @@ fn main() -> std::io::Result<()> {
 
             if w == 1 && simulation_mode {
                 if let Rm::Reg { reg, w } = destination {
-                    println!(
+                    print!(
                         "{} {}, {} ; {}:{:#06x}->{:#06x} ; flags:{}->{}",
                         instruction.1,
                         destination,
@@ -191,7 +194,7 @@ fn main() -> std::io::Result<()> {
                     );
                 }
             } else {
-                println!("{} {}, {}", instruction.1, destination, source);
+                print!("{} {}, {}", instruction.1, destination, source);
             }
         } else if let Some(instruction) = IMMEDIATE_TO_ACCUMULATOR_INSTRUCTIONS
             .iter()
@@ -199,7 +202,7 @@ fn main() -> std::io::Result<()> {
         {
             let w = 0b1 & current_byte;
             let data = read_date(&mut file, w == 0);
-            println!(
+            print!(
                 "{} {}, {}",
                 instruction.1, ACCUMULATOR_NAMES[w as usize], data
             );
@@ -208,8 +211,19 @@ fn main() -> std::io::Result<()> {
             .find(|i| i.0 == current_byte & 0b11111111)
         {
             let data = read_date(&mut file, true);
-            println!("{} ; {}", instruction.1, data);
+
+            if simulation_mode {
+                if instruction.1 == "jne" && !flags.zf {
+                    file.seek(SeekFrom::Current(data as i64))
+                        .expect("Seek error");
+                }
+            }
+            print!("{} ; {}", instruction.1, data);
         }
+
+        let new_ip = file.stream_position().unwrap();
+        println!("; ip:{:#04x}->{:#04x}", old_ip, new_ip);
+        old_ip = new_ip;
     }
 
     if simulation_mode {
@@ -221,6 +235,7 @@ fn main() -> std::io::Result<()> {
             );
         }
         println!("\tflags: {}", flags);
+        println!("\tip: {}", file.stream_position().unwrap());
     }
 
     Ok(())
