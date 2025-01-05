@@ -1,3 +1,10 @@
+pub const REGISTER_NAMES: [[&str; 8]; 2] = [
+    // Used when W = 0.
+    ["al", "cl", "dl", "bl", "ah", "ch", "dh", "bh"],
+    // Used when W = 1.
+    ["ax", "cx", "dx", "bx", "sp", "bp", "si", "di"],
+];
+
 pub const EFFECTIVE_MEMOERY_ADDRESS: [&str; 8] = [
     "bx + si", "bx + di", "bp + si", "bp + di", "si", "di", "bp", "bx",
 ];
@@ -7,8 +14,6 @@ pub const ACCUMULATOR_NAMES: [&str; 2] = ["al", "ax"];
 pub const MOVE_IMMEDIATE_TO_REGISTER_INSTRUCTION: u8 = 0b10110000;
 
 pub const IMMEDIATE_TO_REGISTER_MEMORY_INSTRUCTION: u8 = 0b10000000;
-pub const IMMEDIATE_TO_REGISTER_INSTRUCTIONS: [&str; 8] =
-    ["add", "1", "2", "3", "4", "sub", "6", "cmp"];
 
 pub const IMMEDIATE_TO_ACCUMULATOR_INSTRUCTIONS: [(u8, &str); 3] = [
     (0b00000100, "add"),

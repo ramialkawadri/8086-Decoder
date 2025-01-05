@@ -1,25 +1,27 @@
 mod constants;
+mod flag;
 mod rm;
-mod simulation;
+mod simulator;
 
 use std::env;
 use std::fs::File;
 use std::io::prelude::*;
 
 use constants::{
-    ACCUMULATOR_NAMES, IMMEDIATE_TO_ACCUMULATOR_INSTRUCTIONS, IMMEDIATE_TO_REGISTER_INSTRUCTIONS,
-    IMMEDIATE_TO_REGISTER_MEMORY_INSTRUCTION, MOVE_IMMEDIATE_TO_REGISTER_INSTRUCTION,
-    RETURN_INSTRUCTIONS,
+    ACCUMULATOR_NAMES, IMMEDIATE_TO_ACCUMULATOR_INSTRUCTIONS, IMMEDIATE_TO_REGISTER_MEMORY_INSTRUCTION, MOVE_IMMEDIATE_TO_REGISTER_INSTRUCTION, REGISTER_NAMES, RETURN_INSTRUCTIONS
 };
+use flag::Flags;
 use rm::Rm;
-use simulation::{AddRmToRmSimulator, MovRmToRmSimulator, RMToRmSimulator};
-
-const REGISTER_NAMES: [[&str; 8]; 2] = [
-    // Used when W = 0.
-    ["al", "cl", "dl", "bl", "ah", "ch", "dh", "bh"],
-    // Used when W = 1.
-    ["ax", "cx", "dx", "bx", "sp", "bp", "si", "di"],
-];
+use simulator::{
+    immediate_to_rm_simulator::{
+        AddImmediateToRMSimulator, CmpImmediateToRMSimulator, ImmediateToRMSimulator,
+        SubImmediateToRMSimulator,
+    },
+    rm_to_rm_simulator::{
+        AddRmToRmSimulator, CmpRmToRmSimulator, MovRmToRmSimulator, RMToRmSimulator,
+        SubRmToRmSimulator,
+    },
+};
 
 fn main() -> std::io::Result<()> {
     let args: Vec<String> = env::args().collect();
@@ -32,8 +34,19 @@ fn main() -> std::io::Result<()> {
     let rm_to_rm_instructions: [(u8, &str, Box<dyn RMToRmSimulator>); 4] = [
         (0b10001000, "mov", Box::new(MovRmToRmSimulator)),
         (0b00000000, "add", Box::new(AddRmToRmSimulator)),
-        (0b00101000, "sub", Box::new(MovRmToRmSimulator)),
-        (0b00111000, "cmp", Box::new(MovRmToRmSimulator)),
+        (0b00101000, "sub", Box::new(SubRmToRmSimulator)),
+        (0b00111000, "cmp", Box::new(CmpRmToRmSimulator)),
+    ];
+
+    let immediate_to_register_instructions: [(&str, Box<dyn ImmediateToRMSimulator>); 8] = [
+        ("add", Box::new(AddImmediateToRMSimulator)),
+        ("1", Box::new(AddImmediateToRMSimulator)),
+        ("2", Box::new(AddImmediateToRMSimulator)),
+        ("3", Box::new(AddImmediateToRMSimulator)),
+        ("4", Box::new(AddImmediateToRMSimulator)),
+        ("sub", Box::new(SubImmediateToRMSimulator)),
+        ("6", Box::new(AddImmediateToRMSimulator)),
+        ("cmp", Box::new(CmpImmediateToRMSimulator)),
     ];
 
     println!("; {}\n", args.last().unwrap());
@@ -46,6 +59,10 @@ fn main() -> std::io::Result<()> {
     }
 
     let mut simulation_registers = [0, 0, 0, 0, 0, 0, 0, 0];
+    let mut flags = Flags {
+        zf: false,
+        sf: false,
+    };
 
     while let Ok(_) = file.read_exact(&mut current_byte) {
         let current_byte = current_byte[0];
@@ -75,10 +92,13 @@ fn main() -> std::io::Result<()> {
             let next_byte = next_byte[0];
 
             let mod_value = (0b11000000 & next_byte) >> 6;
-            let rm = (0b111 & next_byte) as usize;
             let one_byte = (current_byte & 0b11) != 0b01;
-            let rm_name =
-                Rm::new(&mut file, mod_value, (0b1 & current_byte) as usize, rm);
+            let rm = Rm::new(
+                &mut file,
+                mod_value,
+                (0b1 & current_byte) as usize,
+                (0b111 & next_byte) as usize,
+            );
             let data = read_date(&mut file, one_byte);
             let prefix = if mod_value == 0b11 {
                 ""
@@ -87,10 +107,32 @@ fn main() -> std::io::Result<()> {
             };
 
             let operation_index = ((next_byte & 0b111000) >> 3) as usize;
-            println!(
-                "{} {}{}, {}",
-                IMMEDIATE_TO_REGISTER_INSTRUCTIONS[operation_index], prefix, rm_name, data
-            );
+
+            if simulation_mode {
+                let old_flags = flags.clone();
+                if let Rm::Reg { reg, .. } = rm {
+                    let old_value = simulation_registers[reg];
+                    immediate_to_register_instructions[operation_index]
+                        .1
+                        .simulate(&mut simulation_registers, &mut flags, &rm, data);
+                    println!(
+                        "{} {}, {} ; {}:{:#06x}->{:#06x} ; flags:{}->{}",
+                        immediate_to_register_instructions[operation_index].0,
+                        rm,
+                        data,
+                        rm,
+                        old_value,
+                        simulation_registers[reg],
+                        old_flags,
+                        flags
+                    );
+                }
+            } else {
+                println!(
+                    "{} {}{}, {}",
+                    immediate_to_register_instructions[operation_index].0, prefix, rm, data
+                );
+            }
         } else if let Some(instruction) = rm_to_rm_instructions
             .iter()
             .find(|i| i.0 == current_byte & 0b11111100)
@@ -110,6 +152,7 @@ fn main() -> std::io::Result<()> {
             let rm = Rm::new(&mut file, mod_value, w, 0b111 & next_byte as usize);
 
             let mut old_value = 0;
+            let old_flags = flags.clone();
 
             let source;
             let destination;
@@ -125,20 +168,26 @@ fn main() -> std::io::Result<()> {
                 if let Rm::Reg { reg, .. } = destination {
                     old_value = simulation_registers[reg];
                 }
-                instruction
-                    .2
-                    .simulate(&mut simulation_registers, &source, &destination);
+                instruction.2.simulate(
+                    &mut simulation_registers,
+                    &mut flags,
+                    &source,
+                    &destination,
+                );
             }
 
             if w == 1 && simulation_mode {
                 if let Rm::Reg { reg, w } = destination {
                     println!(
-                        "mov {}, {} ; {}:{:#06x}->{:#06x}",
+                        "{} {}, {} ; {}:{:#06x}->{:#06x} ; flags:{}->{}",
+                        instruction.1,
                         destination,
                         source,
                         REGISTER_NAMES[w][reg],
                         old_value,
-                        simulation_registers[reg]
+                        simulation_registers[reg],
+                        old_flags,
+                        flags
                     );
                 }
             } else {
@@ -168,11 +217,10 @@ fn main() -> std::io::Result<()> {
         for i in 0..(simulation_registers.len()) {
             println!(
                 "\t{}: {:#06x} ({})",
-                REGISTER_NAMES[1][i],
-                simulation_registers[i],
-                simulation_registers[i],
+                REGISTER_NAMES[1][i], simulation_registers[i], simulation_registers[i],
             );
         }
+        println!("\tflags: {}", flags);
     }
 
     Ok(())
