@@ -2,13 +2,24 @@ use std::{fmt::Display, fs::File, io::Read};
 
 use crate::{REGISTER_NAMES, constants::EFFECTIVE_MEMOERY_ADDRESS};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Rm {
     Reg { w: usize, reg: usize },
     DirectMemory(u16),
     MemoryWithDisplacment { rm: usize, displacment: u16 },
     MemoryNoDisplacment(usize),
 }
+
+pub const MAPPTING_TO_EFFECTIVE_MEMORY_ADDRESS: [(usize, Option<usize>); 8] = [
+    (3, Some(6)),
+    (3, Some(7)),
+    (5, Some(6)),
+    (5, Some(7)),
+    (6, None),
+    (7, None),
+    (5, None),
+    (3, None),
+];
 
 impl Rm {
     pub fn new(file: &mut File, mod_value: u8, w: usize, rm: usize) -> Rm {
@@ -41,6 +52,19 @@ impl Rm {
         } else {
             return Rm::Reg { w, reg: rm };
         }
+    }
+
+    pub fn calculate_memory_index(&self, simulation_registers: &[i16; 8]) -> i16 {
+        let Rm::MemoryNoDisplacment(index) = self else {
+            panic!("Function only works on memory mode no displacement");
+        };
+        let mut answer = simulation_registers[MAPPTING_TO_EFFECTIVE_MEMORY_ADDRESS[*index].0];
+
+        if let Some(val) = MAPPTING_TO_EFFECTIVE_MEMORY_ADDRESS[*index].1 {
+            answer += simulation_registers[val];
+        }
+
+        return answer;
     }
 }
 

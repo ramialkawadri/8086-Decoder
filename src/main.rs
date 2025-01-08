@@ -9,11 +9,13 @@ use std::{env, io::SeekFrom};
 
 use constants::{
     ACCUMULATOR_NAMES, IMMEDIATE_TO_ACCUMULATOR_INSTRUCTIONS,
-    IMMEDIATE_TO_REGISTER_MEMORY_INSTRUCTION, MOVE_IMMEDIATE_TO_REGISTER_INSTRUCTION,
-    REGISTER_NAMES, RETURN_INSTRUCTIONS,
+    IMMEDIATE_TO_REGISTER_MEMORY_INSTRUCTION, IMMEDIATE_TO_REGISTER_MEMORY_INSTRUCTION_MOV,
+    MOVE_IMMEDIATE_TO_REGISTER_INSTRUCTION, REGISTER_NAMES, RETURN_INSTRUCTIONS,
 };
 use flag::Flags;
 use rm::Rm;
+use simulator::immediate_to_rm_simulator::MovImmediateToRMSimulator;
+use simulator::{SimulatorInput, SimulatorOutput};
 use simulator::{
     immediate_to_rm_simulator::{
         AddImmediateToRMSimulator, CmpImmediateToRMSimulator, ImmediateToRMSimulator,
@@ -60,7 +62,8 @@ fn main() -> std::io::Result<()> {
         }
     }
 
-    let mut simulation_registers = [0, 0, 0, 0, 0, 0, 0, 0];
+    let mut simulation_registers = [0; 8];
+    let mut memory = [0u8; 65536];
     let mut flags = Flags {
         zf: false,
         sf: false,
@@ -69,25 +72,29 @@ fn main() -> std::io::Result<()> {
     let mut old_ip = 0;
     while let Ok(_) = file.read_exact(&mut current_byte) {
         let current_byte = current_byte[0];
+        let old_flags = flags.clone();
+        let mut old_value = 0;
+        let mut new_value = 0;
+        let mut prefix = "";
+        let mut instruction_name = "";
+        let mut destination: Option<Rm> = None;
+        let mut source_rm: Option<Rm> = None;
+        let mut immediate_value: Option<i16> = None;
+        let mut default_print = true;
 
         if MOVE_IMMEDIATE_TO_REGISTER_INSTRUCTION == current_byte & 0b11110000 {
             let w = ((0b1000 & current_byte) >> 3) as usize;
             let reg = 0b111 & current_byte as usize;
             let data = read_date(&mut file, w == 0);
 
+            instruction_name = "mov";
+            destination = Some(Rm::Reg { w, reg });
+
             if w == 1 && simulation_mode {
-                let old_value = simulation_registers[reg];
+                old_value = simulation_registers[reg];
                 simulation_registers[reg] = data;
-                print!(
-                    "mov {}, {} ; {}:{:#06x}->{:#06x}",
-                    REGISTER_NAMES[w][reg],
-                    data,
-                    REGISTER_NAMES[w][reg],
-                    old_value,
-                    simulation_registers[reg]
-                );
-            } else {
-                print!("mov {}, {}", REGISTER_NAMES[w][reg], data);
+                new_value = simulation_registers[reg];
+                immediate_value = Some(data);
             }
         } else if IMMEDIATE_TO_REGISTER_MEMORY_INSTRUCTION == current_byte & 0b11111100 {
             let mut next_byte = [0u8];
@@ -103,7 +110,7 @@ fn main() -> std::io::Result<()> {
                 (0b111 & next_byte) as usize,
             );
             let data = read_date(&mut file, one_byte);
-            let prefix = if mod_value == 0b11 {
+            prefix = if mod_value == 0b11 {
                 ""
             } else {
                 if one_byte { "byte " } else { "word " }
@@ -111,30 +118,57 @@ fn main() -> std::io::Result<()> {
 
             let operation_index = ((next_byte & 0b111000) >> 3) as usize;
 
+            instruction_name = immediate_to_register_instructions[operation_index].0;
+            destination = Some(rm.clone());
+            immediate_value = Some(data);
+
             if simulation_mode {
-                let old_flags = flags.clone();
-                if let Rm::Reg { reg, .. } = rm {
-                    let old_value = simulation_registers[reg];
-                    immediate_to_register_instructions[operation_index]
-                        .1
-                        .simulate(&mut simulation_registers, &mut flags, &rm, data);
-                    print!(
-                        "{} {}, {} ; {}:{:#06x}->{:#06x} ; flags:{}->{}",
-                        immediate_to_register_instructions[operation_index].0,
-                        rm,
-                        data,
-                        rm,
-                        old_value,
-                        simulation_registers[reg],
-                        old_flags,
-                        flags
-                    );
-                }
+                SimulatorOutput {
+                    old_value,
+                    new_value,
+                } = immediate_to_register_instructions[operation_index]
+                    .1
+                    .simulate(SimulatorInput {
+                        simulation_registers: &mut simulation_registers,
+                        memory: &mut memory,
+                        flags: &mut flags,
+                        destination: &rm,
+                        immediate_value: Some(data),
+                        source: None,
+                    });
+            }
+        } else if IMMEDIATE_TO_REGISTER_MEMORY_INSTRUCTION_MOV == current_byte & 0b11111110 {
+            let mut next_byte = [0u8];
+            file.read_exact(&mut next_byte).unwrap();
+            let next_byte = next_byte[0];
+
+            let mod_value = (0b11000000 & next_byte) >> 6;
+            let w = (current_byte & 0b1) as usize;
+            let rm = Rm::new(&mut file, mod_value, w, (0b111 & next_byte) as usize);
+            let data = read_date(&mut file, w != 1);
+            prefix = if mod_value == 0b11 {
+                ""
             } else {
-                print!(
-                    "{} {}{}, {}",
-                    immediate_to_register_instructions[operation_index].0, prefix, rm, data
-                );
+                if w != 1 { "byte " } else { "word " }
+            };
+            instruction_name = "mov";
+            destination = Some(rm.clone());
+            immediate_value = Some(data);
+
+            if simulation_mode {
+                SimulatorOutput {
+                    old_value,
+                    new_value,
+                } = MovImmediateToRMSimulator.simulate(SimulatorInput {
+                    simulation_registers: &mut simulation_registers,
+                    memory: &mut memory,
+                    flags: &mut flags,
+                    destination: &rm,
+                    immediate_value: Some(data),
+                    source: None,
+                });
+            } else {
+                print!("{} {}{}, {}", "mov", prefix, rm, data);
             }
         } else if let Some(instruction) = rm_to_rm_instructions
             .iter()
@@ -154,47 +188,32 @@ fn main() -> std::io::Result<()> {
             };
             let rm = Rm::new(&mut file, mod_value, w, 0b111 & next_byte as usize);
 
-            let mut old_value = 0;
-            let old_flags = flags.clone();
-
             let source;
-            let destination;
+            let dst;
             if d == 0 {
                 source = reg;
-                destination = rm;
+                dst = rm;
             } else {
                 source = rm;
-                destination = reg;
+                dst = reg;
             }
+
+            instruction_name = instruction.1;
+            destination = Some(dst.clone());
+            source_rm = Some(source.clone());
 
             if simulation_mode {
-                if let Rm::Reg { reg, .. } = destination {
-                    old_value = simulation_registers[reg];
-                }
-                instruction.2.simulate(
-                    &mut simulation_registers,
-                    &mut flags,
-                    &source,
-                    &destination,
-                );
-            }
-
-            if w == 1 && simulation_mode {
-                if let Rm::Reg { reg, w } = destination {
-                    print!(
-                        "{} {}, {} ; {}:{:#06x}->{:#06x} ; flags:{}->{}",
-                        instruction.1,
-                        destination,
-                        source,
-                        REGISTER_NAMES[w][reg],
-                        old_value,
-                        simulation_registers[reg],
-                        old_flags,
-                        flags
-                    );
-                }
-            } else {
-                print!("{} {}, {}", instruction.1, destination, source);
+                SimulatorOutput {
+                    old_value,
+                    new_value,
+                } = instruction.2.simulate(SimulatorInput {
+                    simulation_registers: &mut simulation_registers,
+                    memory: &mut memory,
+                    flags: &mut flags,
+                    source: Some(&source),
+                    destination: &dst,
+                    immediate_value: None,
+                });
             }
         } else if let Some(instruction) = IMMEDIATE_TO_ACCUMULATOR_INSTRUCTIONS
             .iter()
@@ -219,9 +238,40 @@ fn main() -> std::io::Result<()> {
                 }
             }
             print!("{} ; {}", instruction.1, data);
+            default_print = false;
         }
 
         let new_ip = file.stream_position().unwrap();
+
+        if default_print {
+            let source = if let Some(immediate_value) = immediate_value {
+                immediate_value.to_string()
+            } else {
+                source_rm.unwrap().to_string()
+            };
+            if simulation_mode {
+                print!(
+                    "{} {}{}, {} ; {}:{:#06x}->{:#06x} ; flags:{}->{}",
+                    instruction_name,
+                    prefix,
+                    destination.clone().expect("No destination filled"),
+                    source,
+                    destination.unwrap(),
+                    old_value,
+                    new_value,
+                    old_flags,
+                    flags
+                );
+            } else {
+                print!(
+                    "{} {}{}, {}",
+                    instruction_name,
+                    prefix,
+                    destination.clone().expect("No destination filled"),
+                    source
+                );
+            }
+        }
         println!("; ip:{:#04x}->{:#04x}", old_ip, new_ip);
         old_ip = new_ip;
     }
@@ -229,13 +279,20 @@ fn main() -> std::io::Result<()> {
     if simulation_mode {
         println!("\nFinal registers:");
         for i in 0..(simulation_registers.len()) {
+            if simulation_registers[i] == 0 {
+                continue;
+            }
             println!(
                 "\t{}: {:#06x} ({})",
                 REGISTER_NAMES[1][i], simulation_registers[i], simulation_registers[i],
             );
         }
+        println!(
+            "\tip: {:#06x} ({})",
+            file.stream_position().unwrap(),
+            file.stream_position().unwrap()
+        );
         println!("\tflags: {}", flags);
-        println!("\tip: {}", file.stream_position().unwrap());
     }
 
     Ok(())
