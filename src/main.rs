@@ -68,6 +68,7 @@ fn main() -> std::io::Result<()> {
         zf: false,
         sf: false,
     };
+    let mut current_clock = 0i16;
 
     let mut old_ip = 0;
     while let Ok(_) = file.read_exact(&mut current_byte) {
@@ -81,11 +82,13 @@ fn main() -> std::io::Result<()> {
         let mut source_rm: Option<Rm> = None;
         let mut immediate_value: Option<i16> = None;
         let mut default_print = true;
+        let mut number_of_cycles = 0i16;
 
         if MOVE_IMMEDIATE_TO_REGISTER_INSTRUCTION == current_byte & 0b11110000 {
             let w = ((0b1000 & current_byte) >> 3) as usize;
             let reg = 0b111 & current_byte as usize;
             let data = read_date(&mut file, w == 0);
+            number_of_cycles = 4;
 
             instruction_name = "mov";
             destination = Some(Rm::Reg { w, reg });
@@ -126,6 +129,7 @@ fn main() -> std::io::Result<()> {
                 SimulatorOutput {
                     old_value,
                     new_value,
+                    number_of_cycles,
                 } = immediate_to_register_instructions[operation_index]
                     .1
                     .simulate(SimulatorInput {
@@ -159,6 +163,7 @@ fn main() -> std::io::Result<()> {
                 SimulatorOutput {
                     old_value,
                     new_value,
+                    number_of_cycles,
                 } = MovImmediateToRMSimulator.simulate(SimulatorInput {
                     simulation_registers: &mut simulation_registers,
                     memory: &mut memory,
@@ -206,6 +211,7 @@ fn main() -> std::io::Result<()> {
                 SimulatorOutput {
                     old_value,
                     new_value,
+                    number_of_cycles,
                 } = instruction.2.simulate(SimulatorInput {
                     simulation_registers: &mut simulation_registers,
                     memory: &mut memory,
@@ -250,8 +256,9 @@ fn main() -> std::io::Result<()> {
                 source_rm.unwrap().to_string()
             };
             if simulation_mode {
+                current_clock += number_of_cycles;
                 print!(
-                    "{} {}{}, {} ; {}:{:#06x}->{:#06x} ; flags:{}->{}",
+                    "{} {}{}, {} ; {}:{:#06x}->{:#06x} ; flags:{}->{}; Clocks: +{} = {}",
                     instruction_name,
                     prefix,
                     destination.clone().expect("No destination filled"),
@@ -260,7 +267,9 @@ fn main() -> std::io::Result<()> {
                     old_value,
                     new_value,
                     old_flags,
-                    flags
+                    flags,
+                    number_of_cycles,
+                    current_clock
                 );
             } else {
                 print!(

@@ -72,6 +72,7 @@ impl ImmediateToRMSimulator for AddImmediateToRMSimulator {
             output.old_value = simulation_registers[*destination as usize];
             simulation_registers[*destination as usize] += immediate_value.unwrap();
             output.new_value = simulation_registers[*destination as usize];
+            output.number_of_cycles = 4;
         }
 
         flags.update_from_number(immediate_value.unwrap());

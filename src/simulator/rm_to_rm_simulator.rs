@@ -29,11 +29,19 @@ impl RMToRmSimulator for MovRmToRmSimulator {
             if let Rm::Reg { reg: source, .. } = source {
                 simulation_registers[*destination as usize] =
                     simulation_registers[*source as usize];
+                output.number_of_cycles = 2;
             } else if let Rm::DirectMemory(index) = source {
                 simulation_registers[*destination as usize] = memory[*index as usize] as i16;
+                output.number_of_cycles = 8 + source.estimate_cycles();
             } else if let Rm::MemoryNoDisplacment(_) = source {
                 let memory_index = source.calculate_memory_index(simulation_registers);
                 simulation_registers[*destination as usize] = memory[memory_index as usize] as i16;
+                output.number_of_cycles = 8 + source.estimate_cycles();
+            } else if let Rm::MemoryWithDisplacment { rm: register_index, displacment } = source {
+                let memory_index =
+                    (simulation_registers[*register_index] + *displacment as i16) as usize;
+                simulation_registers[*destination as usize] = memory[memory_index] as i16;
+                output.number_of_cycles = 8 + source.estimate_cycles(); 
             }
             output.new_value = simulation_registers[*destination as usize];
             flags.update_from_number(simulation_registers[*destination as usize]);
@@ -43,7 +51,18 @@ impl RMToRmSimulator for MovRmToRmSimulator {
             if let Rm::Reg { reg: source, .. } = source {
                 memory[memory_index] = simulation_registers[*source as usize] as u8;
             }
+            output.number_of_cycles = 9 + destination.estimate_cycles(); 
             output.old_value = memory[memory_index] as i16;
+        } else if let Rm::MemoryWithDisplacment { rm: register_index, displacment } = destination {
+            let memory_index =
+                (simulation_registers[*register_index] + *displacment as i16) as usize;
+            output.old_value = memory[memory_index] as i16;
+
+            if let Rm::Reg { reg: source, .. } = source {
+                memory[memory_index] = simulation_registers[*source as usize] as u8;
+                output.new_value = simulation_registers[*source as usize];
+                output.number_of_cycles = 9 + destination.estimate_cycles();
+            }
         }
 
         output
@@ -73,6 +92,7 @@ impl RMToRmSimulator for AddRmToRmSimulator {
             if let Rm::Reg { reg: source, .. } = source {
                 simulation_registers[*destination as usize] +=
                     simulation_registers[*source as usize];
+                output.number_of_cycles = 3;
             } else if let Rm::MemoryNoDisplacment(_) = source {
                 let memory_index = source.calculate_memory_index(simulation_registers);
                 simulation_registers[*destination as usize] += memory[memory_index as usize] as i16;
@@ -85,6 +105,16 @@ impl RMToRmSimulator for AddRmToRmSimulator {
                 memory[memory_index] += simulation_registers[*source as usize] as u8;
             }
             output.old_value = memory[memory_index] as i16;
+        } else if let Rm::MemoryWithDisplacment { rm: register_index, displacment } = destination {
+            let memory_index =
+                (simulation_registers[*register_index] + *displacment as i16) as usize;
+            output.old_value = memory[memory_index] as i16;
+
+            if let Rm::Reg { reg: source, .. } = source {
+                memory[memory_index] += simulation_registers[*source as usize] as u8;
+                output.new_value = simulation_registers[*source as usize];
+                output.number_of_cycles = 16 + destination.estimate_cycles();
+            }
         }
 
         flags.update_from_number(output.new_value);

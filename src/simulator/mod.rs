@@ -16,4 +16,5 @@ pub struct SimulatorInput<'a> {
 pub struct SimulatorOutput {
     pub old_value: i16,
     pub new_value: i16,
+    pub number_of_cycles: i16,
 }

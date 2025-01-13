@@ -21,6 +21,15 @@ pub const MAPPTING_TO_EFFECTIVE_MEMORY_ADDRESS: [(usize, Option<usize>); 8] = [
     (3, None),
 ];
 
+pub const NO_DISPLACEMENT_CYCLES_ESTIMATIONS: [i16; 8] = [
+    7, 7, 8, 8, 5, 5, 5, 5
+];
+
+pub const DISPLACEMENT_CYCLES_ESTIMATIONS: [i16; 8] = [
+    11, 12, 12, 11, 9, 9, 9, 9
+];
+
+
 impl Rm {
     pub fn new(file: &mut File, mod_value: u8, w: usize, rm: usize) -> Rm {
         if mod_value == 0b00 {
@@ -65,6 +74,15 @@ impl Rm {
         }
 
         return answer;
+    }
+
+    pub fn estimate_cycles(&self) -> i16 {
+        match self {
+            Rm::Reg { .. } => 6,
+            Rm::DirectMemory(_) => 6,
+            Rm::MemoryNoDisplacment(i) => NO_DISPLACEMENT_CYCLES_ESTIMATIONS[*i],
+            Rm::MemoryWithDisplacment { rm, .. } => DISPLACEMENT_CYCLES_ESTIMATIONS[*rm],
+        }
     }
 }
 
